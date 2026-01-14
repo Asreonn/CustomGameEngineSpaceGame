@@ -5,44 +5,6 @@
 #include "planet.h"
 #include "asteroids.h"
 
-static Texture2D CreateBeamTexture(int width, int height)
-{
-    Image image = GenImageColor(width, height, BLANK);
-    float half_h = height * 0.5f;
-    float max_x = (float)(width - 1);
-
-    for (int y = 0; y < height; y++)
-    {
-        for (int x = 0; x < width; x++)
-        {
-            float u = (float)x / max_x;
-            float taper = sinf(u * PI);
-            float half_w = half_h * (0.15f + 0.85f * taper);
-            float dy = fabsf((float)y - half_h) / (half_w + 0.001f);
-            float body = 1.0f - dy;
-            if (body < 0.0f) body = 0.0f;
-
-            float fade_in = (u < 0.12f) ? (u / 0.12f) : 1.0f;
-            float fade_out = (u > 0.88f) ? ((1.0f - u) / 0.12f) : 1.0f;
-            float end_fade = fade_in * fade_out;
-
-            float core = 1.0f - (dy * 1.6f);
-            if (core < 0.0f) core = 0.0f;
-
-            float alpha = body * body * end_fade;
-            unsigned char a = (unsigned char)(alpha * 255.0f);
-            Color color = (Color){ 80, 180, 255, a };
-            Color core_color = (Color){ 210, 240, 255, a };
-            Color mixed = ColorLerp(color, core_color, core);
-            ImageDrawPixel(&image, x, y, mixed);
-        }
-    }
-
-    Texture2D texture = LoadTextureFromImage(image);
-    UnloadImage(image);
-    return texture;
-}
-
 int main(void)
 {
     const int screenWidth = 1280;
@@ -55,7 +17,8 @@ int main(void)
     SetTargetFPS(60);
 
     Texture2D background = LoadTexture("Assets/Textures/Background/Space Background.png");
-    Texture2D beamTex = CreateBeamTexture(240, 64);
+    Texture2D beamHeadTex = LoadTexture("Assets/Textures/Lasers/Laser Sprites/04.png");
+    Texture2D beamBodyTex = LoadTexture("Assets/Textures/Lasers/Laser Sprites/23.png");
 
     Player player;
     Player_Init(&player, (Vector2){ mapWidth * 0.5f, mapHeight * 0.5f });
@@ -74,8 +37,9 @@ int main(void)
     Rectangle mapBounds = {0.0f, 0.0f, mapWidth, mapHeight};
     const float beamRange = 180.0f;
     const float beamDps = 30.0f;
-    const float beamScale = 0.5f;
-    const float beamStepScale = 0.5f;
+    const float beamBodyScale = 0.75f;
+    const float beamHeadScale = 0.65f;
+    const float beamStepScale = 0.55f;
     float popupTimer = 0.0f;
     float popupInterval = 0.18f;
     int beamActive = 0;
@@ -141,7 +105,7 @@ int main(void)
         }
 
         DrawRectangleLinesEx(mapBounds, 2.0f, Fade(SKYBLUE, 0.5f));
-        if (beamActive && beamTex.id != 0)
+        if (beamActive && beamBodyTex.id != 0 && beamHeadTex.id != 0)
         {
             Vector2 dir = { beamTargetPos.x - player.position.x, beamTargetPos.y - player.position.y };
             float dist = sqrtf(dir.x * dir.x + dir.y * dir.y);
@@ -149,36 +113,52 @@ int main(void)
             {
                 dir.x /= dist;
                 dir.y /= dist;
-                float end_dist = dist - beamTargetRadius;
+                float clamped_dist = (dist > beamRange) ? beamRange : dist;
+                float end_dist = clamped_dist - (beamTargetRadius * 0.95f);
                 if (end_dist < 12.0f) end_dist = 12.0f;
-                beamEndPos = (Vector2){
-                    player.position.x + dir.x * end_dist,
-                    player.position.y + dir.y * end_dist
-                };
                 float angle = atan2f(dir.y, dir.x) * RAD2DEG;
-                float step = beamTex.width * beamScale * beamStepScale;
-                float startOffset = player.size.y * 0.65f;
-                Vector2 start = {
-                    player.position.x + dir.x * startOffset,
-                    player.position.y + dir.y * startOffset
-                };
-                float beam_len = end_dist - startOffset;
+                float body_w = beamBodyTex.width * beamBodyScale;
+                float body_h = beamBodyTex.height * beamBodyScale;
+                float head_w = beamHeadTex.width * beamHeadScale;
+                float head_h = beamHeadTex.height * beamHeadScale;
+                float head_forward = head_w * 0.5f;
+
+                float nose_offset = player.size.y * 0.5f;
+                float start_dist = nose_offset + body_w * 0.5f;
+                float head_center_dist = end_dist - head_forward * 0.9f;
+                if (head_center_dist < start_dist) head_center_dist = start_dist;
+                float body_end_dist = head_center_dist - body_w * 0.5f;
+                float beam_len = body_end_dist - start_dist;
+
                 if (beam_len < 0.0f) beam_len = 0.0f;
+                float step = body_w * beamStepScale;
                 int count = (int)ceilf(beam_len / step);
                 if (count < 1) count = 1;
-                float actual_step = beam_len / (float)count;
-                Rectangle src = {0, 0, (float)beamTex.width, (float)beamTex.height};
-                Vector2 origin = { (beamTex.width * beamScale) * 0.5f, (beamTex.height * beamScale) * 0.5f };
+                float actual_step = (count > 0) ? (beam_len / (float)count) : 0.0f;
+
+                Rectangle body_src = {0, 0, (float)beamBodyTex.width, (float)beamBodyTex.height};
+                Vector2 body_origin = { body_w * 0.5f, body_h * 0.5f };
                 for (int i = 0; i <= count; i++)
                 {
+                    float dist_along = start_dist + actual_step * i;
                     Vector2 pos = {
-                        start.x + dir.x * actual_step * i,
-                        start.y + dir.y * actual_step * i
+                        player.position.x + dir.x * dist_along,
+                        player.position.y + dir.y * dist_along
                     };
-                    Rectangle dst = { pos.x, pos.y, beamTex.width * beamScale, beamTex.height * beamScale };
-                    DrawTexturePro(beamTex, src, dst, origin, angle, WHITE);
-                    DrawTexturePro(beamTex, src, dst, origin, angle, Fade((Color){160, 220, 255, 255}, 0.35f));
+                    Rectangle body_dst = { pos.x, pos.y, body_w, body_h };
+                    DrawTexturePro(beamBodyTex, body_src, body_dst, body_origin, angle, WHITE);
+                    DrawTexturePro(beamBodyTex, body_src, body_dst, body_origin, angle, Fade((Color){180, 210, 255, 255}, 0.35f));
                 }
+
+                beamEndPos = (Vector2){
+                    player.position.x + dir.x * head_center_dist,
+                    player.position.y + dir.y * head_center_dist
+                };
+                Rectangle head_src = {0, 0, (float)beamHeadTex.width, (float)beamHeadTex.height};
+                Rectangle head_dst = { beamEndPos.x, beamEndPos.y, head_w, head_h };
+                Vector2 head_origin = { head_w * 0.5f, head_h * 0.5f };
+                DrawTexturePro(beamHeadTex, head_src, head_dst, head_origin, angle, WHITE);
+                DrawTexturePro(beamHeadTex, head_src, head_dst, head_origin, angle, Fade((Color){200, 230, 255, 255}, 0.35f));
             }
         }
         Planet_Draw(&planet);
@@ -199,7 +179,8 @@ int main(void)
     Player_Unload(&player);
     Asteroids_Unload(&asteroids);
     UnloadTexture(background);
-    UnloadTexture(beamTex);
+    UnloadTexture(beamHeadTex);
+    UnloadTexture(beamBodyTex);
 
     CloseWindow();
     return 0;
